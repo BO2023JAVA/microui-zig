@@ -21,6 +21,14 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // 示例应用内容（平台无关的窗口与逻辑）
+    const app_mod = b.createModule(.{
+        .root_source_file = b.path("src/app.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{ .{ .name = "microui", .module = lib_mod } },
+    });
+
     // SDL3 渲染后端模块（依赖核心库 + SDL + GDI）
     const renderer_mod = b.createModule(.{
         .root_source_file = b.path("src/renderer.zig"),
@@ -44,6 +52,7 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "microui", .module = lib_mod },
                 .{ .name = "renderer", .module = renderer_mod },
+                .{ .name = "app", .module = app_mod },
             },
         }),
     });
@@ -66,4 +75,85 @@ pub fn build(b: *std.Build) void {
 
     const run_step = b.step("run", "运行 microui 演示程序");
     run_step.dependOn(&run.step);
+
+    // ===== Android arm64-v8a（libmicrozig.so，供 SDLActivity 加载） =====
+    // 前置：先按 README 安卓一节交叉编译 libSDL3.so / libSDL3_ttf.so
+    const sdl3_src = "D:\\dev\\android\\sdl-src\\SDL3-3.4.10";
+    const ttf_src = "D:\\dev\\android\\sdl-src\\SDL3_ttf-3.2.2";
+    // Zig 0.16 中 Android 表示为 linux 系统 + android ABI
+    const android_target = b.resolveTargetQuery(.{ .cpu_arch = .aarch64, .os_tag = .linux, .abi = .android });
+
+    const lib_mod_android = b.createModule(.{
+        .root_source_file = b.path("src/microui.zig"),
+        .target = android_target,
+        .optimize = optimize,
+    });
+    // SDL3/SDL_ttf 手写绑定（无 cImport，供 Android 端使用）
+    const sdl3_android_mod = b.createModule(.{
+        .root_source_file = b.path("src/sdl3_android.zig"),
+        .target = android_target,
+        .optimize = optimize,
+    });
+    const app_mod_android = b.createModule(.{
+        .root_source_file = b.path("src/app.zig"),
+        .target = android_target,
+        .optimize = optimize,
+        .imports = &.{ .{ .name = "microui", .module = lib_mod_android } },
+    });
+    const renderer_android_mod = b.createModule(.{
+        .root_source_file = b.path("src/renderer_android.zig"),
+        .target = android_target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "microui", .module = lib_mod_android },
+            .{ .name = "sdl3_android", .module = sdl3_android_mod },
+        },
+    });
+    setupAndroidModule(renderer_android_mod, optimize, sdl3_src, ttf_src);
+
+    const main_android_mod = b.createModule(.{
+        .root_source_file = b.path("src/main_android.zig"),
+        .target = android_target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "microui", .module = lib_mod_android },
+            .{ .name = "renderer", .module = renderer_android_mod },
+            .{ .name = "app", .module = app_mod_android },
+            .{ .name = "sdl3_android", .module = sdl3_android_mod },
+        },
+    });
+    setupAndroidModule(main_android_mod, optimize, sdl3_src, ttf_src);
+
+    // 共享库名 "microzig"：SDLActivity 的 getLibraries() 期望 libmicrozig.so
+    const android_lib = b.addLibrary(.{
+        .name = "microzig",
+        .root_module = main_android_mod,
+        .linkage = .dynamic,
+        .version = null,
+    });
+    b.installArtifact(android_lib);
+
+    const android_step = b.step("android", "构建 Android arm64-v8a 的 libmicrozig.so");
+    android_step.dependOn(&android_lib.step);
+    android_step.dependOn(b.getInstallStep()); // 一并安装产物（zig-out/lib/libmicrozig.so）
+}
+
+/// Android 模块公共配置：链接 SDL3 / SDL_ttf 的 .so。
+/// 无 cImport 也无 libc：SDL/TTF 调用走手写绑定（sdl3_android.zig），
+/// 符号由两个 .so 提供，Zig std 在 linux 上走内联系统调用。
+fn setupAndroidModule(
+    mod: *std.Build.Module,
+    optimize: std.builtin.OptimizeMode,
+    sdl3_src: []const u8,
+    ttf_src: []const u8,
+) void {
+    mod.strip = optimize != .Debug;
+    mod.addObjectFile(.{ .cwd_relative = std.fs.path.joinZ(
+        std.heap.page_allocator,
+        &.{ sdl3_src, "build-android", "libSDL3.so" },
+    ) catch @panic("oom") });
+    mod.addObjectFile(.{ .cwd_relative = std.fs.path.joinZ(
+        std.heap.page_allocator,
+        &.{ ttf_src, "build-android", "libSDL3_ttf.so" },
+    ) catch @panic("oom") });
 }

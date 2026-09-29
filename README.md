@@ -15,15 +15,21 @@ microui 是一个极小的即时模式（immediate-mode）GUI 库，这是 rxi/m
 
 ```
 microui/
-├── build.zig        # 构建脚本（SDL3 路径可用 -Dsdl=... 覆盖）
-├── LICENSE          # MIT 许可证
-├── README.md        # 本文档（中文）
-├── README.en.md     # English version
+├── build.zig          # 构建脚本（Win x64 演示 + Android arm64 动态库）
+├── LICENSE            # MIT 许可证
+├── README.md          # 本文档（中文）
+├── README.en.md       # English version
+├── android/           # Android 打包工程（Gradle，预编译 .so → APK）
 └── src/
-    ├── microui.zig   # ★ 核心库（前端：单文件、无依赖、零堆分配，可直接拷贝使用）
-    ├── renderer.zig  # SDL3 渲染后端（图集 + 中文字形栅格化 + 命令绘制）
-    ├── atlas.zig     # 图集数据（ASCII 字形 + 图标）
-    └── demo.zig      # 演示程序（事件循环 + 示例窗口）
+    ├── microui.zig          # ★ 核心库（前端：单文件、无依赖、零堆分配）
+    ├── renderer.zig         # SDL3 渲染后端（桌面 Windows x64，GDI 中文字形）
+    ├── renderer_android.zig # Android 渲染后端（SDL3 + SDL_ttf 中文字形）
+    ├── sdl3_android.zig     # SDL3/SDL_ttf 手写绑定（Android 用，无 @cImport）
+    ├── main_android.zig     # Android 入口（导出 SDL_main + 触摸→鼠标映射）
+    ├── app.zig              # 示例 UI 内容（平台无关，桌面/安卓共用）
+    ├── demo.zig             # 桌面入口（SDL 事件循环 + 输入映射）
+    ├── atlas.zig            # 图集数据（ASCII 字形 + 图标）
+    └── font_simhei.ttf      # 内嵌中文字体（Android 字形栅格化）
 ```
 
 ## 构建
@@ -54,6 +60,36 @@ zig build -Dsdl=C:/path/to/SDL3 -Doptimize=ReleaseSmall run
 
 > 演示程序在 Windows 上用 GDI 读取系统字体（微软雅黑 / 宋体）栅格化中文字形，
 > 文本框可直接输入中文。其他平台需自行替换 `demo.zig` 中的字体栅格化逻辑。
+
+### Android（arm64-v8a）
+
+前置：Android SDK + NDK 28.2 + CMake + JDK 17+（对应路径见 `build.zig` 与 `android/`）。
+
+```bash
+# 一步准备：交叉编译 SDL3/SDL_ttf + 构建应用 .so，拷贝到 app/libs/arm64-v8a/
+# （首次需下载 SDL3/SDL_ttf 源码并在 SDL3_ttf/external/freetype 放入 freetype，路径见脚本参数）
+powershell -ExecutionPolicy Bypass -File android/prepare_libs.ps1
+
+# 打包 APK（JAVA_HOME 指向 JDK17+，GRADLE_USER_HOME 可指向本地 gradle 缓存）
+cd android && gradlew.bat assembleDebug   # debug 签名，可直接安装
+#   或 gradlew.bat assembleRelease        # release（用 android/keystore.properties 的签名）
+#      产物：android/app/build/outputs/apk/release/app-release.apk
+
+# 安装到真机（需开启 USB 调试）
+adb install app/build/outputs/apk/debug/app-debug.apk
+```
+
+Android 端要点：
+
+- **触摸即鼠标**：单指按下/移动/抬起映射为鼠标左键（`main_android.zig`），滚动条可直接拖动；
+- **中文输入**：SDL3 在 Android 上把输入法（IME）文本发成 `SDL_EVENT_TEXT_INPUT`，输入框直接可用；
+- **中文字形**：`renderer_android.zig` 用 SDL_ttf（FreeType）从内嵌字体栅格化。仓库里的
+  `src/font_simhei.ttf` 是**子集字体**（104KB，仅含 demo 用到的字符，运行时子集化生成：
+  `python -m fontTools.subset 原字体 --text-file=字符表 --output-file=src/font_simhei.ttf`）。
+  如需支持任意中文输入，用完整字体（如微软雅黑）替换该文件后重新编译；
+- **手写 SDL 绑定**：`src/sdl3_android.zig` 是手写的 SDL3/SDL_ttf 绑定（无 @cImport）——
+  Zig 0.16 的 cImport 要求链接 libc，而 Zig 不自带 Android 的 bionic，故直接声明所需符号；
+- **三个 .so 不进仓库**：`android/app/libs/` 已在 .gitignore，用 `prepare_libs.ps1` 现编。
 
 ## 在自己的项目中使用
 

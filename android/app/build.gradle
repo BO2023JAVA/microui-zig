@@ -1,0 +1,74 @@
+// microui Android 应用：预编译 .so 打包（无原生构建）
+// 三个 .so（libSDL3.so / libSDL3_ttf.so / libmicrozig.so）放在 app/libs/arm64-v8a/，
+// 由 zig build android 产出后拷贝进来（见 README 安卓一节）。
+
+plugins {
+    id 'com.android.application'
+}
+
+// 签名凭据从 keystore.properties 读取（不入库，见根 .gitignore）
+def ksProps = new Properties()
+def ksFile = rootProject.file('keystore.properties')
+if (ksFile.exists()) {
+    ksProps.load(new FileInputStream(ksFile))
+}
+
+android {
+    namespace = "org.libsdl.app"
+    compileSdkVersion 35
+    ndkVersion = "28.2.13676358"
+    defaultConfig {
+        // SDL3 最低要求 Android 7.0（API 24）
+        minSdkVersion 24
+        targetSdkVersion 35
+        versionCode 1
+        versionName "1.0"
+    }
+    signingConfigs {
+        release {
+            if (ksProps.containsKey('storeFile')) {
+                storeFile file(ksProps['storeFile'])
+                storePassword ksProps['storePassword']
+                keyAlias ksProps['keyAlias']
+                keyPassword ksProps['keyPassword']
+            }
+        }
+    }
+    buildTypes {
+        debug {
+            // 不剥离 native 调试符号：绕开 AGP strip 任务对预编译 .so 的旧缓存，
+            // 确保打进 APK 的始终是 app/libs 里的最新 .so（release 仍会 strip）
+            jniDebuggable true
+        }
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            if (ksProps.containsKey('storeFile')) {
+                signingConfig signingConfigs.release
+            }
+        }
+    }
+    // 预编译 .so 一律不剥离符号（strip 对 jniLibs 的旧缓存会导致 APK 打包到旧 .so）
+    packaging {
+        jniLibs {
+            keepDebugSymbols += ['**/*.so']
+        }
+    }
+    // 只保留 arm64-v8a（与 zig build android 一致）
+    defaultConfig {
+        ndk {
+            abiFilters 'arm64-v8a'
+        }
+    }
+    sourceSets.main {
+        // 预编译 .so 统一放 app/libs/<abi>/
+        jniLibs.srcDirs = ['libs']
+    }
+    lint {
+        abortOnError = false
+    }
+}
+
+dependencies {
+    implementation fileTree(include: ['*.jar'], dir: 'libs')
+}

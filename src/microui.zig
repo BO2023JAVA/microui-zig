@@ -267,7 +267,6 @@ pub const Context = struct {
     frame: u32 = 0,
 
     hover_root: ?*Container = null,
-    next_hover_root: ?*Container = null,
     scroll_target: ?*Container = null,
 
     number_edit_buf: [max_fmt]u8 = undefined,
@@ -311,10 +310,20 @@ pub const Context = struct {
         ctx.command_len = 0;
         ctx.root_list.len = 0;
         ctx.scroll_target = null;
-        ctx.hover_root = ctx.next_hover_root;
-        ctx.next_hover_root = null;
+        // 悬停根容器本帧实时重建（构建窗口时按当前鼠标位置更新）。
+        // 原实现取上一帧的 next_hover_root：触摸按下瞬间鼠标位置已跳到新点，
+        // 但悬停窗口还是旧的，导致 inHoverRoot 判假、第一次点击永远拿不到焦点。
+        ctx.hover_root = null;
         ctx.mouse_delta.x = ctx.mouse_pos.x - ctx.last_mouse_pos.x;
         ctx.mouse_delta.y = ctx.mouse_pos.y - ctx.last_mouse_pos.y;
+        // 按下帧：清除旧焦点与悬停，让本帧真正按下的控件重新获得焦点。
+        // 否则快速切换控件时（上一控件 UP 与下一控件 DOWN 同帧），旧控件的
+        // hover 残留会与 pressed 一起触发 setFocus（updateControl 中 hover==id
+        // 且 pressed 即 setFocus），导致上一个控件被新按下位置触发。
+        if (ctx.mouse_pressed != 0) {
+            ctx.focus = 0;
+            ctx.hover = 0;
+        }
         ctx.frame += 1;
     }
 
@@ -337,8 +346,8 @@ pub const Context = struct {
 
         // 鼠标按下在更底层的悬停根容器上时，将其置顶
         if (ctx.mouse_pressed != 0) {
-            if (ctx.next_hover_root) |nhr| {
-                if (nhr.zindex < ctx.last_zindex and nhr.zindex >= 0) ctx.bringToFront(nhr);
+            if (ctx.hover_root) |hr| {
+                if (hr.zindex < ctx.last_zindex and hr.zindex >= 0) ctx.bringToFront(hr);
             }
         }
 
@@ -510,12 +519,17 @@ pub const Context = struct {
 
     pub fn inputMouseDown(ctx: *Context, x: i32, y: i32, btn: u8) void {
         ctx.inputMouseMove(x, y);
+        // 以按下点为基准：触摸按下是位置"跳变"（从旧位置直接跳到落点），
+        // 若不同步 last_mouse_pos，本帧 mouse_delta 会包含整段跳变位移，
+        // 刚点击窗口/滑块就瞬间偏移一大截。桌面鼠标按下时位移本来就近似 0，无副作用。
+        ctx.last_mouse_pos = .{ .x = x, .y = y };
         ctx.mouse_down |= btn;
         ctx.mouse_pressed |= btn;
     }
 
     pub fn inputMouseUp(ctx: *Context, x: i32, y: i32, btn: u8) void {
         ctx.inputMouseMove(x, y);
+        ctx.last_mouse_pos = .{ .x = x, .y = y };
         ctx.mouse_down &= ~btn;
     }
 
@@ -731,7 +745,10 @@ pub const Context = struct {
         const mouseover = ctx.mouseOver(rect);
         if (ctx.focus == id) ctx.updated_focus = true;
         if ((opt & opt_no_interact) != 0) return;
-        if (mouseover and ctx.mouse_down == 0) ctx.hover = id;
+        // 悬停：鼠标悬停或触摸按下瞬间都建立 hover。
+        // 按下帧强制覆盖 hover：否则旧控件残留的 hover 会拦住新控件（hover == 0 才更新），
+        // 触摸没有悬停预演，第一下必须直接命中，否则要先点一下清掉旧 hover 才能生效。
+        if (mouseover and (ctx.mouse_down == 0 or ctx.mouse_pressed != 0)) ctx.hover = id;
 
         if (ctx.focus == id) {
             if (ctx.mouse_pressed != 0 and !mouseover) ctx.setFocus(0);
@@ -802,7 +819,10 @@ pub const Context = struct {
 
     pub fn checkbox(ctx: *Context, label_str: []const u8, state: *bool) u8 {
         var res: u8 = 0;
-        const id = ctx.getId(std.mem.asBytes(&state));
+        // 用 state 指向的实际变量地址生成 id：直接取参数地址（&state）会在同一函数
+        // 连续多次调用时落回相同栈位置，导致多个复选框 id 相同、焦点互相串扰
+        var state_addr: usize = @intFromPtr(state);
+        const id = ctx.getId(std.mem.asBytes(&state_addr));
         var r = ctx.layoutNext();
         const box = Rect.init(r.x, r.y, r.h, r.h);
         ctx.updateControl(id, r, 0);
@@ -872,7 +892,10 @@ pub const Context = struct {
     }
 
     pub fn textboxEx(ctx: *Context, buf: []u8, opt: u16) u8 {
-        const id = ctx.getId(std.mem.asBytes(&buf));
+        // 用缓冲实际地址生成 id：直接取参数地址（&buf）在连续多个输入框时会落回
+        // 相同栈位置导致 id 相同、焦点互相串扰
+        var buf_addr: usize = @intFromPtr(buf.ptr);
+        const id = ctx.getId(std.mem.asBytes(&buf_addr));
         const r = ctx.layoutNext();
         return ctx.textboxRaw(buf, id, r, opt);
     }
@@ -913,7 +936,10 @@ pub const Context = struct {
         var res: u8 = 0;
         const last = value.*;
         var v = last;
-        const id = ctx.getId(std.mem.asBytes(&value));
+        // 用 value 指向的实际变量地址生成 id：直接取参数地址（&value）会在同一行
+        // 连续多个滑块/数字框时落回相同栈位置，导致 id 相同、焦点互相串扰
+        var value_addr: usize = @intFromPtr(value);
+        const id = ctx.getId(std.mem.asBytes(&value_addr));
         const base = ctx.layoutNext();
 
         // 文本编辑模式（编辑中则跳过正常绘制）
@@ -923,7 +949,10 @@ pub const Context = struct {
 
         // 拖动输入
         if (ctx.focus == id and (ctx.mouse_down | ctx.mouse_pressed) == mouse_left) {
-            v = low + @as(Real, @floatFromInt(ctx.mouse_pos.x - base.x)) *
+            // 值映射钳制在滑块区域内：手指拖出滑块范围（滑到相邻控件上）时，
+            // 值停在滑块边界，不会跟着手指跳到其他控件的位置导致"上一个滑块被触发"
+            const mx = std.math.clamp(ctx.mouse_pos.x, base.x, base.x + base.w);
+            v = low + @as(Real, @floatFromInt(mx - base.x)) *
                 (high - low) / @as(Real, @floatFromInt(base.w));
             if (step != 0) {
                 v = @as(Real, @floatFromInt(
@@ -956,7 +985,9 @@ pub const Context = struct {
     pub fn numberEx(ctx: *Context, value: *Real, step: Real, comptime fmt: []const u8, opt: u16) u8 {
         var buf: [max_fmt + 1]u8 = undefined;
         var res: u8 = 0;
-        const id = ctx.getId(std.mem.asBytes(&value));
+        // 用 value 指向的实际变量地址生成 id（与 sliderEx 相同的原因）
+        var value_addr: usize = @intFromPtr(value);
+        const id = ctx.getId(std.mem.asBytes(&value_addr));
         const base = ctx.layoutNext();
         const last = value.*;
 
@@ -1125,10 +1156,12 @@ pub const Context = struct {
         ctx.container_stack.push(cnt);
         ctx.root_list.push(cnt);
         cnt.head = ctx.pushCommand(.{ .jump = 0 });
+        // 按当前鼠标位置实时更新悬停根容器（取 zindex 最高的命中窗口）。
+        // 触摸按下瞬间即生效，第一次点击即可命中，无需等上一帧的悬停结果。
         if (rectOverlapsVec2(cnt.rect, ctx.mouse_pos) and
-            (ctx.next_hover_root == null or cnt.zindex > ctx.next_hover_root.?.zindex))
+            (ctx.hover_root == null or cnt.zindex > ctx.hover_root.?.zindex))
         {
-            ctx.next_hover_root = cnt;
+            ctx.hover_root = cnt;
         }
         // 重置裁剪，防止内层根容器被外层窗口裁剪
         ctx.clip_stack.push(unclipped_rect);
@@ -1231,7 +1264,6 @@ pub const Context = struct {
         const cnt = ctx.getContainer(ctx.getId(name), 0) orelse return;
         // 设为悬停根容器，防止 beginWindowEx 立即关闭它
         ctx.hover_root = cnt;
-        ctx.next_hover_root = cnt;
         // 定位到鼠标处、打开并置顶
         cnt.rect = Rect.init(ctx.mouse_pos.x, ctx.mouse_pos.y, 1, 1);
         cnt.open = true;

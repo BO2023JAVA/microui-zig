@@ -20,15 +20,21 @@ microui is a tiny immediate-mode GUI library. This is a **complete Zig rewrite**
 
 ```
 microui/
-├── build.zig        # Build script (SDL3 path overridable with -Dsdl=...)
-├── LICENSE          # MIT
-├── README.md        # Chinese docs
-├── README.en.md     # This file
+├── build.zig          # Build script (Win x64 demo + Android arm64 shared lib)
+├── LICENSE            # MIT
+├── README.md          # Chinese docs
+├── README.en.md       # This file
+├── android/           # Android packaging (Gradle; prebuilt .so → APK)
 └── src/
-    ├── microui.zig   # ★ Core library (frontend: single file, no deps, zero-alloc, copy-and-go)
-    ├── renderer.zig  # SDL3 render backend (atlas + CJK glyph rasterization + command drawing)
-    ├── atlas.zig     # Atlas data (ASCII glyphs + icons)
-    └── demo.zig      # Demo (event loop + sample windows)
+    ├── microui.zig          # ★ Core library (frontend: single file, no deps, zero-alloc)
+    ├── renderer.zig         # SDL3 render backend (desktop Windows x64, GDI CJK glyphs)
+    ├── renderer_android.zig # Android render backend (SDL3 + SDL_ttf CJK glyphs)
+    ├── sdl3_android.zig     # Hand-written SDL3/SDL_ttf bindings (Android, no @cImport)
+    ├── main_android.zig     # Android entry (exports SDL_main + touch→mouse mapping)
+    ├── app.zig              # Sample UI content (platform-agnostic, shared)
+    ├── demo.zig             # Desktop entry (SDL event loop + input mapping)
+    ├── atlas.zig            # Atlas data (ASCII glyphs + icons)
+    └── font_simhei.ttf      # Embedded CJK font (Android glyph rasterization)
 ```
 
 ## Building
@@ -62,6 +68,41 @@ automatically.
 > On Windows the demo rasterizes CJK glyphs from system fonts (Microsoft YaHei / SimSun)
 > via GDI, so the text box accepts Chinese input directly. On other platforms, replace the
 > font-rasterization code in `demo.zig` with your own.
+
+### Android (arm64-v8a)
+
+Prereqs: Android SDK + NDK 28.2 + CMake + JDK 17+ (paths in `build.zig` and `android/`).
+
+```bash
+# One-step prep: cross-compile SDL3/SDL_ttf + build the app .so, copy into app/libs/arm64-v8a/
+# (first time: download SDL3/SDL_ttf sources and put freetype into SDL3_ttf/external/freetype;
+#  paths are script parameters)
+powershell -ExecutionPolicy Bypass -File android/prepare_libs.ps1
+
+# Package the APK (JAVA_HOME → JDK 17+; GRADLE_USER_HOME can point at a local gradle cache)
+cd android && gradlew.bat assembleDebug   # debug-signed, installable
+#    or gradlew.bat assembleRelease        # release (signed via android/keystore.properties)
+#      artifact: android/app/build/outputs/apk/release/app-release.apk
+
+# Install on a device (USB debugging enabled)
+adb install app/build/outputs/apk/debug/app-debug.apk
+```
+
+Android notes:
+
+- **Touch acts as mouse**: single-finger down/move/up map to the left mouse button
+  (`main_android.zig`); scrollbars are draggable directly.
+- **Chinese input**: SDL3 delivers the IME text as `SDL_EVENT_TEXT_INPUT` on Android,
+  so the text box works as-is.
+- **CJK glyphs**: `renderer_android.zig` rasterizes with SDL_ttf (FreeType) from an embedded
+  font. `src/font_simhei.ttf` in the repo is a **subset** (104 KB, covers the demo's
+  characters; regenerate with `python -m fontTools.subset <font> --text-file=<chars> --output-file=src/font_simhei.ttf`).
+  Swap in a full font (e.g. Microsoft YaHei) and rebuild to support arbitrary input.
+- **Hand-written SDL bindings**: `src/sdl3_android.zig` declares the needed SDL3/SDL_ttf
+  symbols manually (no @cImport) — Zig 0.16's cImport requires linking libc, and Zig ships
+  no bionic for Android, so the symbols are declared directly.
+- **The three .so are not committed**: `android/app/libs/` is gitignored; regenerate with
+  `prepare_libs.ps1`.
 
 ## Using the library in your project
 

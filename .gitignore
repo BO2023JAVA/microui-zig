@@ -1,2 +1,9 @@
 .zig-cache/
 zig-out/
+android/build/
+android/app/build/
+android/.gradle/
+android/.idea/
+android/local.properties
+android/app/libs/
+android/keystore.properties
