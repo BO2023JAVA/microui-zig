@@ -25,9 +25,10 @@ microui/
 ├── README.md        # Chinese docs
 ├── README.en.md     # This file
 └── src/
-    ├── microui.zig  # ★ Core library (single file, no deps, copy-and-go)
-    ├── demo.zig     # Demo (SDL3 render backend + sample windows)
-    └── atlas.zig    # Atlas data (ASCII glyphs + icons)
+    ├── microui.zig   # ★ Core library (frontend: single file, no deps, zero-alloc, copy-and-go)
+    ├── renderer.zig  # SDL3 render backend (atlas + CJK glyph rasterization + command drawing)
+    ├── atlas.zig     # Atlas data (ASCII glyphs + icons)
+    └── demo.zig      # Demo (event loop + sample windows)
 ```
 
 ## Building
@@ -89,7 +90,7 @@ The host implements three things:
 
 1. **Two measurement callbacks**: `text_width` / `text_height`;
 2. **Per-frame flow**: `ctx.begin()` → windows/widgets → `ctx.end()`;
-3. **Render the commands**: after `end()`, iterate with `commandIter()` and draw each one.
+3. **Render the commands**: after `end()`, iterate with `commandIter()` and draw each one — or just use the bundled SDL3 backend (`renderer.zig`, one call `renderer.render(ctx)`).
 
 ```zig
 const microui = @import("microui");
@@ -121,7 +122,7 @@ while (it.next()) |cmd| {
 }
 ```
 
-See `src/demo.zig` for a complete SDL3 Render API backend.
+See `src/renderer.zig` for a complete SDL3 Render API backend (including CJK glyph rasterization).
 
 ## API Reference
 

@@ -20,9 +20,10 @@ microui/
 ├── README.md        # 本文档（中文）
 ├── README.en.md     # English version
 └── src/
-    ├── microui.zig  # ★ 核心库（单文件，无依赖，可直接拷贝使用）
-    ├── demo.zig     # 演示程序（SDL3 渲染后端 + 示例窗口）
-    └── atlas.zig    # 图集数据（ASCII 字形 + 图标）
+    ├── microui.zig   # ★ 核心库（前端：单文件、无依赖、零堆分配，可直接拷贝使用）
+    ├── renderer.zig  # SDL3 渲染后端（图集 + 中文字形栅格化 + 命令绘制）
+    ├── atlas.zig     # 图集数据（ASCII 字形 + 图标）
+    └── demo.zig      # 演示程序（事件循环 + 示例窗口）
 ```
 
 ## 构建
@@ -82,7 +83,7 @@ const microui_mod = b.createModule(.{
 
 1. **实现两个测量回调**：`text_width` / `text_height`（库要知道文字占多大）；
 2. **每帧流程**：`ctx.begin()` → 调用窗口/控件 → `ctx.end()`；
-3. **渲染命令**：`mu.end()` 后用 `commandIter()` 遍历命令列表，逐条绘制。
+3. **渲染命令**：`ctx.end()` 后用 `commandIter()` 遍历命令列表，逐条绘制——或直接使用附带的 SDL3 后端（`renderer.zig`，`renderer.render(ctx)` 一步完成）。
 
 ```zig
 const microui = @import("microui");
@@ -114,7 +115,7 @@ while (it.next()) |cmd| {
 }
 ```
 
-完整渲染后端示例见 `src/demo.zig`（SDL3 Render API 实现）。
+完整渲染后端示例见 `src/renderer.zig`（SDL3 Render API 实现，含中文字形栅格化）。
 
 ## API 参考
 
